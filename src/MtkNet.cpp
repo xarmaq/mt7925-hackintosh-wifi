@@ -459,6 +459,85 @@ int MtkWlan::reload(const char *why) {
     return 0;
 }
 
+// System sleep (setPowerState 0, gate held). What mac80211 does for a driver without WoWLAN, then mt7925_pci_suspend:
+// leave the AP while the firmware still answers (deauthentication, STA_REC and BSS_INFO removed), so the front end sees
+// the link go down now and not as a stale association after the wake; a join or scan in flight ends with a result; the
+// tick stops; then DMA, interrupts and ownership (sleepHw). The wanted network, the keys macOS gave (PMK), the station
+// address, the country and the BSS cache stay, so the manager can rejoin by itself after the wake.
+void MtkWlan::sleepDown() {
+    if (asleep || quiesced || !timer) return;   // no station yet (attach failed): nothing runs that sleep could break
+    asleep = true;
+    sleeps++;
+    uint8_t prev = joinState;
+    bool scanWasRunning = scanRunning;
+    if (joinState) joinTeardown(linkUp ? 3 : 0);   // reason 3, leaving; reportLink tells the front end
+    if (prev && prev < 5) {                     // a join in flight: its caller hears it ended (no backoff, see wakeUp)
+        lastResult = MTK_JOIN_AP_LEFT;
+        if (feJoinResult && fe.ctx) feJoinResult(fe.ctx, (int)MTK_JOIN_AP_LEFT, tgtBssid);
+    }
+    scanRunning = false;
+    if (userScanPending) { userScanPending = false; userScanDoneAt = ticks; }
+    if (scanWasRunning && feScanDone && fe.ctx) feScanDone(fe.ctx, -1, 0);
+    fwDead = true;                              // from here until the wake every firmware command fails at once
+    timer->cancelTimeout();
+    for (uint16_t i = 0; i < txData.n; i++) txBusy[i] = false;
+    txInFlight = 0;
+    stallFreezeRx = false;
+    sleepHw();
+    setNum("MtkSleeps", sleeps);
+    step(prev == 5 ? "sleep: left the network, chip handed to the firmware" : "sleep: chip handed to the firmware");
+}
+
+// System wake (setPowerState 1, gate held): the attach bring-up again (wakeHw: ownership, WFSYS reset, rings, firmware),
+// the station (hwInit keeps the address macOS set, the country stays), then the tick, and the manager rejoins the wanted
+// network at once. A native front end hears the link come back as after a reload; macOS's own auto-join may get there
+// first, which the core answers as usual. If the chip does not come back, the firmware stays marked dead, the tick
+// stays stopped (nothing touches the chip), the interface stays down, and the next sleep / wake cycle tries again.
+void MtkWlan::wakeUp() {
+    if (!asleep) return;                        // the initial power state, or a sleep that was never taken down
+    asleep = false;
+    wakes++;
+    uint64_t t0, t1, ns;
+    clock_get_uptime(&t0);
+    bool lost = false;
+    int rc = wakeHw(&lost);
+    if (lost) wakePowerLost++;
+    setProperty("MtkWakePower", rc == -9 ? "card not on the bus" : lost ? "lost (registers reset)" : "kept");
+    if (!rc) {
+        fwDead = false;
+        uniCmdTimeouts = 0;
+        if (hwInit(true)) rc = -8;
+    }
+    clock_get_uptime(&t1);
+    absolutetime_to_nanoseconds(t1 - t0, &ns);
+    lastWakeMs = (uint32_t)(ns / 1000000);
+    setNum("MtkWakes", wakes);
+    setNum("MtkWakeMs", lastWakeMs);
+    setNum("MtkWakePowerLost", wakePowerLost);
+    if (rc) {
+        wakeFails++;
+        wakeFailed = true;
+        fwDead = true;
+        setNum("MtkWakeFails", wakeFails);
+        setNum("MtkWakeLastResult", (uint32_t)rc);
+        char s[96];
+        snprintf(s, sizeof(s), "wake fail: bring-up returned %d, Wi-Fi stays down until the next wake or a reboot", rc);
+        step(s);
+        return;
+    }
+    wakeFailed = false;
+    scanWanted = true;
+    cmKick = true;
+    rejoinPending = wantActive || autoOpen;
+    if (wantActive) lastResult = MTK_JOIN_AP_LEFT;
+    cmFails = 0;
+    rejoinAt = ticks;                           // no backoff: the link went down on purpose
+    timer->setTimeoutUS(TICK_US);
+    char s[96];
+    snprintf(s, sizeof(s), "wake: chip up again in %u ms (power %s), rejoining", lastWakeMs, lost ? "lost" : "kept");
+    step(s);
+}
+
 void MtkWlan::timerFired(OSObject *owner, IOTimerEventSource *) {
     MtkWlan *self = OSDynamicCast(MtkWlan, owner);
     if (self) self->tick();
@@ -835,6 +914,15 @@ int MtkWlan::opSetMac(void *core, const uint8_t m[6]) { return static_cast<MtkWl
 int MtkWlan::coreSetMac(const uint8_t m[6]) {
     if (!m || (m[0] & 1) || !(m[0] | m[1] | m[2] | m[3] | m[4] | m[5])) return -1;
     if (!memcmp(mac, m, 6)) return 0;
+    if (asleep) {
+        // no station in the firmware while asleep: keep the address, the wake's hwInit(true) gives it to DEV_INFO
+        memcpy(mac, m, 6);
+        char s[18];
+        snprintf(s, sizeof(s), "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        setProperty("MtkMacAddr", s);
+        setNum("MtkMacChanges", ++macChanges);
+        return 0;
+    }
     if (joinState) joinTeardown(3);                 // reason 3, leaving; the manager rejoins the wanted network with the new address
     uint8_t old[6];
     memcpy(old, mac, 6);

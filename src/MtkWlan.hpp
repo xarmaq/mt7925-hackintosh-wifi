@@ -78,6 +78,7 @@ public:
     void stop(IOService *provider) override;
     void free() override;
     // I-081: restart and power-off quiesce the chip so the next OS (or Recovery) finds it clean
+    // stealth-a16: system sleep tears the station down, wake brings the chip up again (MtkNet.cpp sleepDown / wakeUp)
     IOReturn setPowerState(unsigned long state, IOService *device) override;
     void systemWillShutdown(IOOptionBits specifier) override;
 
@@ -112,6 +113,11 @@ private:
     bool pciFlr();
     void quiesce(const char *why);
     int reload(const char *why);
+    // sleep / wake (MtkNet.cpp, hardware halves in MtkFw.cpp): teardown on sleep, full bring-up on wake
+    void sleepDown();
+    void wakeUp();
+    void sleepHw();
+    int wakeHw(bool *powerLost);
     int ringAlloc(MtkRing &r, bool rx, uint16_t idx, uint16_t n, uint32_t bufSize);
     void ringReset(MtkRing &r);
     void ringFree(MtkRing &r) { r.desc.free(); r.bufs.free(); }
@@ -394,6 +400,9 @@ private:
     IOWorkLoop *workLoop = nullptr;
     IOTimerEventSource *timer = nullptr;
     bool pmJoined = false, quiesced = false;   // power plane membership (systemWillShutdown), quiesce done once
+    // sleep / wake: MtkSleep (Info.plist) or boot-arg -mtknosleep turns it off (then sleep is only acknowledged, as before)
+    bool sleepOn = true, asleep = false, wakeFailed = false;
+    uint32_t sleeps = 0, wakes = 0, wakeFails = 0, wakePowerLost = 0, lastWakeMs = 0;
     // attach recovery and the link supervisor (MtkSuper.c)
     uint32_t attachRecover = 0, attachFlr = 0, flrUnsupported = 0;
     mtk_super super = {};

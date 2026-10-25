@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12.1-stealth.1 (fork `xarmaq/mt7925-hackintosh-wifi`, branch `stealth-a16`, 2026-10-25)
+
+- Sleep and wake. System sleep tears the station down (deauthentication, firmware records removed, link down to the
+  front end, join or scan in flight ended with a result), then quiesces the chip as `mt7925_pci_suspend` does (DMA idle
+  and off, interrupts off, fw own, bus master off). Wake runs the attach bring-up again (drv own, WFSYS reset, rings,
+  firmware download, station with the address macOS set) and the manager rejoins the wanted network at once. Whether
+  the chip lost power is detected as Linux does and published (`MtkWakePower`), but the full bring-up runs either way.
+  A failed wake leaves Wi-Fi down without touching the chip until the next wake. Details in `docs/HOW-IT-WORKS.md`.
+- `MtkSleep` (Info.plist, default true) and the boot-arg `-mtknosleep` turn it off; sleep is then only acknowledged, as
+  in 0.12.1.
+- CI: `.github/workflows/stealth.yml` builds the kext with `tools/build-mac.sh` and publishes stealth tags as releases.
+- Written for the MSI Stealth A16 AI+ A3XWJG (MT7925 subsystem `105B:E138`). Nothing in the driver depends on the
+  subsystem id. Not tested on hardware yet.
+
 ## 0.12.1 (2026-10-23)
 
 - Core API version 5 for the native front end ([mt7925-hackintosh-wifi-native](https://github.com/watchthelight-labs/mt7925-hackintosh-wifi-native) 0.4.13):

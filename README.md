@@ -73,7 +73,7 @@ Everything below was measured on one laptop (Legion 5 15IAX10, OpenCore 1.0.8) o
 - With this kext alone there is no Wi-Fi menu: macOS sees an Ethernet card and you pick networks with the `mtkwifi` command line tool. There is no Wi-Fi icon, no Wi-Fi pane in System Settings, no AirDrop, no Continuity. The native front end is a second kext, [MtkWlanNative](https://github.com/watchthelight-labs/mt7925-hackintosh-wifi-native) (0.4.9, macOS Tahoe 26.7.1 only), built against the same core ops table: with it the Wi-Fi menu works, macOS runs the scans and joins, saves networks and auto-joins at boot.
 - It can't join WPA3-SAE only, WPA2 with PSK-SHA256 only, networks that require management frame protection, WPA (TKIP pairwise) or enterprise (802.1X) networks. `mtkwifi list` marks these.
 - No roaming between access points of one network. No HE (802.11ax) or EHT; the association is VHT at 80 MHz.
-- No sleep and wake handling. The laptop this runs on has sleep disabled.
+- Sleep and wake: upstream has none (the laptop it was written on has sleep disabled). The `stealth-a16` fork adds it (see the changelog, 0.12.1-stealth.1): the station is torn down before sleep and the chip gets the full attach bring-up on wake. Not yet tested on hardware; `-mtknosleep` turns it off.
 - Three firmware command timeouts in a row stop the driver until a reboot.
 - RX is polled every millisecond from a timer, not driven by the interrupt.
 - Bluetooth on this card is a separate USB device (`0489:E111`) and needs its own firmware loader, which is a separate project.

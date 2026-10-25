@@ -146,6 +146,12 @@ bool MtkWlan::start(IOService *provider) {
     if (ht) htOn = ht->isTrue();
     OSNumber *mbw = OSDynamicCast(OSNumber, getProperty("MtkMaxBw"));
     if (mbw && mbw->unsigned32BitValue() <= 2) maxBw = (uint8_t)mbw->unsigned32BitValue();
+    // sleep / wake (default on): MtkSleep false or boot-arg -mtknosleep go back to acknowledging sleep only
+    OSBoolean *slp = OSDynamicCast(OSBoolean, getProperty("MtkSleep"));
+    if (slp) sleepOn = slp->isTrue();
+    uint32_t noSleep = 0;
+    if (PE_parse_boot_argn("-mtknosleep", &noSleep, sizeof(noSleep))) sleepOn = false;
+    setProperty("MtkSleep", sleepOn);
     setProperty("MtkMilestone", "W1");
 
     setNum("MtkPciCommandBefore", pci->configRead16(kIOPCIConfigCommand), 16);
@@ -216,8 +222,19 @@ bool MtkWlan::start(IOService *provider) {
     return true;
 }
 
-// Sleep is off on this machine; system sleep and wake only need an acknowledgement
+// The power plane parent is the PCI device: state 0 comes before it drops to D3 (system sleep, hibernation), state 1
+// after IOPCIFamily restored its config space on wake. Both run synchronously on the gate, so no tick, front-end call
+// or user-client call touches the chip in between; the wake bring-up (firmware download) holds it for about a second.
+// With MtkSleep off, or before the station ever came up, this only acknowledges, as up to 0.12.1.
 IOReturn MtkWlan::setPowerState(unsigned long state, IOService *device) {
+    if (!sleepOn || !workLoop || !pci || !mmio)
+        return kIOPMAckImplied;
+    workLoop->runAction([](OSObject *o, void *on, void *, void *, void *) -> IOReturn {
+        MtkWlan *self = static_cast<MtkWlan *>(o);
+        if (on) self->wakeUp();
+        else self->sleepDown();
+        return kIOReturnSuccess;
+    }, this, (void *)(uintptr_t)(state != 0));
     return kIOPMAckImplied;
 }
 

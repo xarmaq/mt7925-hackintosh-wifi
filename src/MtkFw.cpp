@@ -527,3 +527,62 @@ void MtkWlan::quiesce(const char *why) {
     pci->setBusMasterEnable(false);                               // no DMA into host memory past this point
     IOLog("MtkWlan: quiesced for %s (drv_own %d, dma idle %d, wfsys reset %d)\n", why, drv, idle, rst);
 }
+
+// mt7925_pci_suspend, hardware half (the station is already gone, see MtkNet.cpp sleepDown): driver own, wait for the
+// WFDMA to go idle, DMA off, host interrupts off, then the chip back to the firmware (mt792xe_mcu_fw_pmctrl) so it can
+// enter its own low-power state, and bus mastering off. The deep-sleep and HIF-suspend MCU commands Linux sends first
+// are left out: the wake path resets WFSYS and downloads the firmware again whether or not the chip kept power.
+void MtkWlan::sleepHw() {
+    if (irqIndex >= 0) pci->disableInterrupt(irqIndex);
+    int drv = drvOwn();
+    bool idle = pollMsec(WFDMA0_GLO_CFG, GLO_TX_DMA_BUSY | GLO_RX_DMA_BUSY, 0, 1000, 1);   // "wait until dma is idle"
+    rawWrite(WFDMA0_GLO_CFG, rawRead(WFDMA0_GLO_CFG) & ~(GLO_TX_DMA_EN | GLO_RX_DMA_EN));
+    bool off = pollMsec(WFDMA0_GLO_CFG, GLO_TX_DMA_BUSY | GLO_RX_DMA_BUSY, 0, 100, 1);
+    rawWrite(WFDMA0_HOST_INT_ENA, 0);
+    rawWrite(PCIE_MAC_INT_ENABLE, 0);
+    rawWrite(WFDMA0_HOST_INT_STA, rawRead(WFDMA0_HOST_INT_STA));  // nothing left pending for the wake
+    int fw = fwOwn();
+    pci->setBusMasterEnable(false);                               // no DMA into host memory while asleep
+    char s[96];
+    snprintf(s, sizeof(s), "drv_own %d, dma idle %d off %d, fw_own %d", drv, idle, off, fw);
+    setProperty("MtkSleepHw", s);
+    IOLog("MtkWlan: sleep: %s\n", s);
+}
+
+// mt7925_pci_resume up to the point where Linux falls back to mt792x_reset: bus master and memory on, the chip back for
+// the driver (mt792xe_mcu_drv_pmctrl), then whether it kept power, read the way mt792x_dma_need_reinit does it (the
+// WFDMA dummy register loses the NEED_REINIT bit hwStart sets when the chip lost power). Either way the chip then gets
+// the attach bring-up: WFSYS reset, rings reset, patch and RAM download (as in bringUp: one more WFSYS reset and try,
+// then a function level reset and a third). Returns hwStart's code, -9 when the card does not answer on the bus.
+int MtkWlan::wakeHw(bool *powerLost) {
+    *powerLost = false;
+    pci->setMemoryEnable(true);
+    pci->setBusMasterEnable(true);
+    uint32_t misc = rr(CONN_ON_MISC);
+    setNum("MtkWakeConnOnMisc", misc);
+    if (misc == 0xffffffff) {                                     // all ones: the function is not there (or still in D3cold)
+        IOSleep(100);
+        misc = rr(CONN_ON_MISC);
+        if (misc == 0xffffffff) return -9;
+    }
+    fwOwn();
+    int drv = drvOwn();
+    setNum("MtkWakeDrvOwnTries", (uint32_t)drv);
+    if (drv < 0 && pciFlr()) {
+        fwOwn();
+        drv = drvOwn();
+    }
+    if (drv > 0) *powerLost = !(rr(WFDMA_DUMMY_CR) & (1u << 1));    // MT_WFDMA_NEED_REINIT
+    if (irqIndex >= 0) pci->enableInterrupt(irqIndex);
+    int rc = drv > 0 ? hwStart() : -4;
+    if (rc && rc != -3) {
+        IOLog("MtkWlan: wake bring-up failed (%d), WFSYS reset and retry\n", rc);
+        fwOwn();
+        rc = drvOwn() > 0 ? hwStart() : -4;
+        if (rc && rc != -3 && pciFlr()) {
+            fwOwn();
+            if (drvOwn() > 0) rc = hwStart();
+        }
+    }
+    return rc;
+}

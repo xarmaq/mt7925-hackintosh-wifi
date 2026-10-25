@@ -15,7 +15,7 @@
 	<key>CFBundlePackageType</key>
 	<string>KEXT</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.12.1</string>
+	<string>0.12.1-stealth.1</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleVersion</key>
@@ -50,6 +50,8 @@
 			<key>MtkMaxBw</key>
 			<integer>2</integer>
 			<key>MtkPower</key>
+			<true/>
+			<key>MtkSleep</key>
 			<true/>
 			<key>MtkRxBa</key>
 			<true/>

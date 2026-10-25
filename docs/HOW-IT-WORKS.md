@@ -114,10 +114,36 @@ Callbacks must not sleep and must not call back into `tx` or `set_enabled`. The 
 - Roaming between BSSIDs of one SSID.
 - HE (802.11ax) and EHT; the association is VHT at 80 MHz.
 - A native front end that gives macOS a real Wi-Fi interface (menu, AirDrop, Continuity). The ops table is shaped for it, and that kext is now [mt7925-hackintosh-wifi-native](https://github.com/watchthelight-labs/mt7925-hackintosh-wifi-native).
-- Sleep and wake. The laptop this runs on has sleep disabled.
+- Sleep and wake: not upstream. The `stealth-a16` fork adds it, see "Sleep and wake (stealth-a16 fork)" below.
 - Matching a SCAN_DONE or ROC grant event to the request that caused it; the machines use deadlines instead.
 - Interrupt-driven RX.
 
 ## Testing
 
 `bash tests/run.sh` builds `MtkCrypto.c`, `MtkSupp.c` and `MtkSuper.c` with the host clang and UBSan, runs the vectors, the simulated handshakes and every supervisor decision, and compares the printed values with `tests/oracle.py`. On the machine, `tools/wifi.sh` records the interface state, runs a router ping, a download and an upload through Cloudflare's speed endpoint with ping alongside, and saves every `Mtk*` property. The numbers in the README come from that script.
+
+## Sleep and wake (stealth-a16 fork)
+
+The core is a child of the PCI device in the power plane (it joined for the restart quiesce in 0.12.0). `setPowerState`
+now does real work on the core's gate, unless `MtkSleep` is false or the boot-arg `-mtknosleep` is set:
+
+- State 0 (before the PCI device drops to D3: sleep, hibernation). `sleepDown` in `MtkNet.cpp` does what mac80211 does
+  for a driver without WoWLAN: leave the access point while the firmware still answers (deauthentication reason 3,
+  STA_REC and BSS_INFO removed), so the front end sees the link go down; a join or scan in flight ends with a result
+  (`MTK_JOIN_AP_LEFT`, scan status -1). Then the tick stops, the firmware is marked dead so nothing waits on it, and
+  `sleepHw` in `MtkFw.cpp` follows `mt7925_pci_suspend`: driver own, wait for the WFDMA to go idle, DMA off, host
+  interrupts off, ownership back to the firmware (`mt792xe_mcu_fw_pmctrl`), bus mastering off. The deep-sleep and
+  HIF-suspend MCU commands Linux sends are left out because the wake path reloads the firmware anyway.
+- State 1 (after IOPCIFamily restored config space). `wakeUp` / `wakeHw`: memory and bus master on, driver own
+  (`mt792xe_mcu_drv_pmctrl`), whether the chip kept power is read as `mt792x_dma_need_reinit` does (the WFDMA dummy
+  register loses the NEED_REINIT bit), then the attach bring-up whatever the answer: WFSYS reset, rings reset, patch
+  and RAM download, with the same retries as attach (WFSYS reset again, then a function level reset). `hwInit(true)`
+  readies the station with the address macOS last set (a `set_mac` that arrives while asleep is only stored) and the
+  current country. Then the tick restarts and the manager rejoins the wanted network without backoff; a native front
+  end hears the link come back as after a reload, and macOS's own auto-join is answered as usual.
+- A wake that fails leaves the firmware marked dead, the tick stopped and the link down; the next sleep and wake try
+  again. Nothing panics.
+
+Properties: `MtkSleep`, `MtkSleeps`, `MtkSleepHw`, `MtkWakes`, `MtkWakeMs`, `MtkWakePower` (`kept`, `lost (registers
+reset)`, `card not on the bus`), `MtkWakePowerLost`, `MtkWakeFails`, `MtkWakeLastResult`, `MtkWakeConnOnMisc`,
+`MtkWakeDrvOwnTries`. None of this has run on hardware yet.
