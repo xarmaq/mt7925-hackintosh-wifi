@@ -24,6 +24,11 @@ jobs:
           xcrun --sdk macosx --show-sdk-path
       - name: Build (Release)
         run: tools/build-mac.sh
+      - name: Link check (which kernel libraries the undefined symbols resolve to; informational)
+        continue-on-error: true
+        run: |
+          K=$(ls -d out/*.kext | head -1)
+          kmutil libraries -p "$K" --undef-symbols 2>&1 | tail -40 || true
       - name: Package
         id: pkg
         run: |
