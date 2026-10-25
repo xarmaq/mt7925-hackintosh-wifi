@@ -37,10 +37,7 @@
 			<key>MtkAutoNetworks</key>
 			<array/>
 			<key>MtkAutoOpenSsids</key>
-			<array>
-				<string>Boingo 5GHz</string>
-				<string>Boingo</string>
-			</array>
+			<array/>
 			<key>MtkDataRate</key>
 			<integer>0</integer>
 			<key>MtkFrontEnd</key>
