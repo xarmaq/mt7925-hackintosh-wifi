@@ -27,8 +27,28 @@ jobs:
       - name: Link check (which kernel libraries the undefined symbols resolve to; informational)
         continue-on-error: true
         run: |
-          K=$(ls -d out/*.kext | head -1)
-          kmutil libraries -p "$K" --undef-symbols 2>&1 | tail -40 || true
+          K=$(ls -d out/*.kext | head -1); B=$K/Contents/MacOS/$(basename "$K" .kext)
+          nm -u -arch x86_64 "$B" | sort -u > /tmp/undef.txt
+          : > /tmp/exports.txt
+          for k in /System/Library/Extensions/System.kext/PlugIns/*.kext; do
+            id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$k/Info.plist" 2>/dev/null) || continue
+            f=$(ls "$k"/* 2>/dev/null | grep -v Info.plist | head -1); [ -f "$f" ] || f="$k/Contents/MacOS/$(basename "$k" .kext)"
+            nm -gU -arch x86_64 "$f" 2>/dev/null | awk -v id="$id" '{print $NF, id}' >> /tmp/exports.txt
+          done
+          echo "export entries read: $(wc -l < /tmp/exports.txt)"
+          /usr/libexec/PlistBuddy -c 'Print :OSBundleLibraries' Info.plist
+          python3 - <<'PY'
+          import collections
+          ex = collections.defaultdict(set)
+          for l in open('/tmp/exports.txt'):
+              p = l.split()
+              if len(p) == 2: ex[p[0]].add(p[1])
+          und = [l.strip() for l in open('/tmp/undef.txt') if l.strip()]
+          kpi = [s for s in und if s in ex]
+          print("undefined %d, found in System.kext pseudo-kexts %d" % (len(und), len(kpi)))
+          for s in ('_PE_parse_boot_argn', '_PE_parse_boot_arg_str', '_kernel_thread_start', '_clock_get_uptime'):
+              if s in und: print(s, sorted(ex.get(s, [])))
+          PY
       - name: Package
         id: pkg
         run: |
