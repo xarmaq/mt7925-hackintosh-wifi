@@ -38,6 +38,20 @@ jobs:
           shasum -a 256 out/MtkWlan.kext/Contents/MacOS/MtkWlan
           echo "dir=$D" >> "$GITHUB_OUTPUT"
           echo "zip=dist/$D-RELEASE.zip" >> "$GITHUB_OUTPUT"
+      # the command line client for the Ethernet front end (macOS 15, where the native Wi-Fi menu does not load)
+      - name: Build mtkwifi
+        run: |
+          set -euo pipefail
+          tools/mtkwifi/build.sh
+          file tools/mtkwifi/out/mtkwifi
+          mkdir -p dist/mtkwifi
+          cp tools/mtkwifi/out/mtkwifi tools/mtkwifi/install.sh tools/mtkwifi/org.watchthelight.mtkwifi.plist tools/mtkwifi/README.md dist/mtkwifi/
+          mkdir -p dist/mtkwifi/out && mv dist/mtkwifi/mtkwifi dist/mtkwifi/out/mtkwifi
+          (cd dist && zip -r -X -q mtkwifi.zip mtkwifi && shasum -a 256 mtkwifi.zip)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mtkwifi
+          path: dist/mtkwifi.zip
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.pkg.outputs.dir }}
